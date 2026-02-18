@@ -4,13 +4,29 @@ A mobile-first Progressive Web App for splitting restaurant bills in ZAR from a 
 
 ## Architecture
 
-| Layer     | Technology          | Purpose                              |
-|-----------|---------------------|--------------------------------------|
-| Frontend  | Vanilla JS PWA      | Mobile web app, offline-capable      |
-| Backend   | n8n 2.9.0 webhooks  | Business logic, OCR, auth            |
-| Database  | PostgreSQL 13+      | All party, item, selection & closure data |
-| OCR       | Google Vision API   | Receipt text extraction              |
-| Auth      | Google OAuth 2.0    | Optional persistent user accounts    |
+```
+Internet (HTTPS)
+     │
+     ▼
+Cloudflare (TLS termination + CDN)
+     │  HTTP on port 80
+     ▼
+nginx container  ──→  /webhook/*  ──→  n8n container (port 5678)
+     │                                        │
+     ▼                                        ▼
+frontend PWA                         PostgreSQL container
+(static files)
+```
+
+| Layer      | Technology          | Purpose                               |
+|------------|---------------------|---------------------------------------|
+| Proxy/CDN  | Cloudflare          | TLS, DDoS protection, caching         |
+| Web server | nginx 1.25          | Serve PWA, proxy /webhook/ to n8n     |
+| Backend    | n8n 2.9.0           | Business logic, OCR, auth workflows   |
+| Database   | PostgreSQL 16       | All party, item, selection & closure data |
+| OCR        | Google Vision API   | Receipt text extraction               |
+| Auth       | Google OAuth 2.0    | Optional persistent user accounts     |
+| Runtime    | Docker Compose      | All services in one stack             |
 
 ## File Structure
 
@@ -18,7 +34,12 @@ A mobile-first Progressive Web App for splitting restaurant bills in ZAR from a 
 bill-splitter/
 ├── Project.md
 ├── README.md
-├── setup.sh                        # One-shot setup for Rocky Linux 8
+├── docker-compose.yml              # Full stack: postgres + n8n + nginx
+├── .env.example                    # Copy to .env and fill in values
+├── .gitignore
+├── setup.sh                        # Alternative: bare-metal Rocky Linux 8 setup
+├── nginx/
+│   └── default.conf                # nginx: PWA serve + /webhook/ proxy + Cloudflare IPs
 ├── database/
 │   └── schema.sql                  # Full PostgreSQL schema + views + indexes
 ├── n8n-workflows/
@@ -41,30 +62,60 @@ bill-splitter/
     └── sw.js                       # Service worker (offline shell)
 ```
 
-## Quick Setup (Rocky Linux 8)
+## Docker Deployment (Recommended)
+
+### Prerequisites
+- Docker + Docker Compose installed on your Rocky Linux 8 server
+- A domain pointed to your server in Cloudflare (orange-cloud enabled)
+- Google Cloud project with Vision API and OAuth credentials
+
+### Steps
 
 ```bash
-# Clone / copy the project to your server
+# 1. Clone the repo
 git clone <repo> /opt/bill-splitter
 cd /opt/bill-splitter
 
-# Edit config before running
-nano setup.sh          # set DB_PASS, DB_NAME, NGINX_SERVE_DIR
-nano frontend/config.js # set N8N_URL, GOOGLE_CLIENT_ID, GOOGLE_VISION_API_KEY
+# 2. Create your environment file
+cp .env.example .env
+nano .env
+# Fill in: POSTGRES_PASSWORD, WEBHOOK_URL (your https domain),
+#           N8N_ENCRYPTION_KEY (run: openssl rand -hex 32)
 
-# Run setup (creates DB, configures nginx, installs n8n service)
+# 3. Edit frontend config
+nano frontend/config.js
+# Set: GOOGLE_CLIENT_ID, GOOGLE_VISION_API_KEY
+# Leave N8N_URL as '' (empty) – nginx proxies /webhook/ to n8n
+
+# 4. Start all containers
+docker compose up -d
+
+# 5. Check everything is running
+docker compose ps
+docker compose logs -f
+
+# 6. Import n8n workflows
+#    Open http://YOUR_SERVER_IP:5678/ (direct, not via Cloudflare)
+#    a. Complete n8n setup wizard
+#    b. Credentials → New → PostgreSQL → name it "Bill Splitter Postgres"
+#       Host: postgres  Port: 5432  DB/User/Pass: from your .env
+#    c. Workflows → Import → upload each file in n8n-workflows/ (01–10)
+#    d. Activate all 10 workflows
+
+# 7. Visit your domain → https://YOUR_DOMAIN/
+```
+
+### Cloudflare Setup
+1. Add your domain to Cloudflare with the DNS A record pointing to your server IP
+2. Set the proxy status to **Proxied** (orange cloud) — this gives you HTTPS
+3. In Cloudflare SSL/TLS settings, set mode to **Flexible** (Cloudflare → nginx is HTTP)
+4. Optional: add a Page Rule to cache static assets (`*.js`, `*.css`)
+
+### Alternative: Bare-metal Rocky Linux 8
+
+```bash
 chmod +x setup.sh
 ./setup.sh
-
-# Edit n8n environment (set WEBHOOK_URL to your server's public IP)
-sudo nano /etc/n8n.env
-sudo systemctl start n8n
-
-# Import workflows (via n8n UI)
-# Open http://YOUR_SERVER_IP:5678/
-# Workflows → Import → upload each file in n8n-workflows/ one by one
-# Create a PostgreSQL credential named "Bill Splitter Postgres"
-# Activate all 10 workflows
 ```
 
 ## Required External Services

@@ -1,0 +1,16 @@
+# Environment / secrets
+.env
+*.env.local
+
+# Docker data
+postgres_data/
+n8n_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp

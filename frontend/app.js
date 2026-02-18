@@ -24,7 +24,13 @@ const state = {
 };
 
 /* ── Helpers ────────────────────────────────────────────────── */
-const N8N = () => window.CONFIG.N8N_URL;
+// Build webhook URL.
+// When N8N_URL is '' (empty), nginx proxies /webhook/ → n8n, so use relative path.
+// This works correctly whether the app runs behind nginx+Cloudflare or direct.
+function webhookUrl(path) {
+  const base = (window.CONFIG.N8N_URL || '').replace(/\/$/, '');
+  return base ? `${base}/webhook/${path}` : `/webhook/${path}`;
+}
 
 function zarFormat(cents) {
   return 'R' + (cents / 100).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -36,7 +42,7 @@ async function api(path, method = 'GET', body = null) {
     headers: { 'Content-Type': 'application/json' }
   };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(`${N8N()}/webhook/${path}`, opts);
+  const res = await fetch(webhookUrl(path), opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = data.message || data.error || `HTTP ${res.status}`;
