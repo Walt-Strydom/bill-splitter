@@ -24,7 +24,7 @@ frontend PWA                         PostgreSQL container
 | Web server | nginx 1.25          | Serve PWA, proxy /webhook/ to n8n     |
 | Backend    | n8n 2.9.0           | Business logic, OCR, auth workflows   |
 | Database   | PostgreSQL 16       | All party, item, selection & closure data |
-| OCR        | Tesseract 5 (self-hosted) | Receipt text extraction (no API key needed) |
+| OCR        | Google Vision API   | Receipt text extraction               |
 | Auth       | Google OAuth 2.0    | Optional persistent user accounts     |
 | Runtime    | Docker Compose      | All services in one stack             |
 
@@ -40,10 +40,6 @@ bill-splitter/
 ├── setup.sh                        # Alternative: bare-metal Rocky Linux 8 setup
 ├── nginx/
 │   └── default.conf                # nginx: PWA serve + /webhook/ proxy + Cloudflare IPs
-├── tesseract-service/
-│   ├── Dockerfile                  # python:3.11-slim + tesseract-ocr + pytesseract
-│   ├── app.py                      # Flask OCR API: POST /ocr → { text, lines }
-│   └── requirements.txt
 ├── database/
 │   └── schema.sql                  # Full PostgreSQL schema + views + indexes
 ├── n8n-workflows/
@@ -91,9 +87,8 @@ nano frontend/config.js
 # Set: GOOGLE_CLIENT_ID, GOOGLE_VISION_API_KEY
 # Leave N8N_URL as '' (empty) – nginx proxies /webhook/ to n8n
 
-# 4. Build and start all containers
-# --build is needed the first time to build the Tesseract OCR image
-docker compose up -d --build
+# 4. Start all containers
+docker compose up -d
 
 # 5. Check everything is running
 docker compose ps
@@ -132,18 +127,11 @@ chmod +x setup.sh
 - Add your domain to Authorised JavaScript origins
 - Copy the Client ID into `frontend/config.js`
 
-### 2. Tesseract OCR (self-hosted, no API key needed)
-OCR runs inside the `tesseract` Docker container — **no external API key is required**.
-The container is built from `tesseract-service/` when you run `docker compose up --build`.
-
-Receipt image preprocessing steps applied automatically:
-1. Greyscale conversion
-2. Contrast boost (2×)
-3. Sharpen filter
-
-For better accuracy on low-quality photos, ensure the receipt is:
-- Well-lit, flat on a surface
-- Camera held directly above, not at an angle
+### 2. Google Cloud Vision API (for receipt OCR)
+- Enable the **Cloud Vision API** in Google Cloud Console
+- APIs & Services → Credentials → Create API Key
+- Copy the key into `frontend/config.js` (`GOOGLE_VISION_API_KEY`)
+- The key is sent to the n8n server and used server-side only
 
 ### 3. n8n PostgreSQL Credential
 In the n8n UI, create a credential:

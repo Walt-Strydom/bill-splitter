@@ -704,8 +704,9 @@ async function processReceipt(file) {
 
   try {
     const result = await api('upload-receipt', 'POST', {
-      join_token:   state.guest.join_token,
-      image_base64: base64
+      join_token:             state.guest.join_token,
+      image_base64:           base64,
+      google_vision_api_key:  window.CONFIG.GOOGLE_VISION_API_KEY
     });
 
     const items = result.items || [];
