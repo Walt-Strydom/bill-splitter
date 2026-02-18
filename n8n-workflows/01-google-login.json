@@ -1,0 +1,142 @@
+{
+  "name": "01 – Google Login",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "google-login",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "a1b2c3d4-0001-0001-0001-000000000002"
+    },
+    {
+      "parameters": {
+        "url": "=https://oauth2.googleapis.com/tokeninfo?id_token={{ $json.body.id_token }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000003",
+      "name": "Verify Google Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $json.iss }}",
+              "rightValue": "accounts.google.com",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000004",
+      "name": "Token Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO users (google_sub, email, name, picture_url)\nVALUES ($1, $2, $3, $4)\nON CONFLICT (google_sub) DO UPDATE\n  SET email       = EXCLUDED.email,\n      name        = EXCLUDED.name,\n      picture_url = EXCLUDED.picture_url\nRETURNING id, google_sub, email, name, picture_url, created_at",
+        "options": {
+          "queryReplacement": "={{ [$('Verify Google Token').item.json.sub, $('Verify Google Token').item.json.email, $('Verify Google Token').item.json.name, $('Verify Google Token').item.json.picture] }}"
+        }
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000005",
+      "name": "Upsert User",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1000, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ user_id: $json.id, email: $json.email, name: $json.name, picture_url: $json.picture_url, created_at: $json.created_at }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000006",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"error\": \"invalid_token\", \"message\": \"Google ID token could not be verified\" }",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000007",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1000, 400]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Verify Google Token", "type": "main", "index": 0 }]
+      ]
+    },
+    "Verify Google Token": {
+      "main": [
+        [{ "node": "Token Valid?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Token Valid?": {
+      "main": [
+        [{ "node": "Upsert User", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert User": {
+      "main": [
+        [{ "node": "Respond Success", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "a1b2c3d4-0001-0001-0001-000000000000",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "workflow-google-login",
+  "tags": [{ "name": "bill-splitter" }]
+}

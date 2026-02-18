@@ -1,0 +1,102 @@
+version: "3.9"
+
+# ============================================================
+#  Bill Splitter ZAR – Docker Compose
+#  Services: postgres, n8n, nginx (frontend)
+#  All data persisted in named volumes.
+# ============================================================
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: bill-splitter-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-bill_splitter}
+      POSTGRES_USER:     ${POSTGRES_USER:-bill_splitter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bill_splitter} -d ${POSTGRES_DB:-bill_splitter}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  # ── n8n ────────────────────────────────────────────────────
+  n8n:
+    image: n8nio/n8n:2.9.0
+    container_name: bill-splitter-n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # n8n internal database (uses the same Postgres instance, separate DB)
+      DB_TYPE:                    postgresdb
+      DB_POSTGRESDB_HOST:         postgres
+      DB_POSTGRESDB_PORT:         5432
+      DB_POSTGRESDB_DATABASE:     n8n
+      DB_POSTGRESDB_USER:         ${POSTGRES_USER:-bill_splitter}
+      DB_POSTGRESDB_PASSWORD:     ${POSTGRES_PASSWORD:-changeme}
+      DB_POSTGRESDB_SCHEMA:       public
+
+      # n8n server config
+      N8N_HOST:                   0.0.0.0
+      N8N_PORT:                   5678
+      N8N_PROTOCOL:               http
+      WEBHOOK_URL:                ${WEBHOOK_URL:-http://localhost:5678/}
+      N8N_ENCRYPTION_KEY:         ${N8N_ENCRYPTION_KEY:-change-this-32-char-secret-key!!}
+
+      # n8n behaviour
+      EXECUTIONS_PROCESS:         main
+      N8N_LOG_LEVEL:              info
+
+      # Expose the Bill Splitter Postgres credentials to n8n workflows
+      # via environment variables (set in n8n credential from env)
+      BS_DB_HOST:                 postgres
+      BS_DB_PORT:                 5432
+      BS_DB_NAME:                 ${POSTGRES_DB:-bill_splitter}
+      BS_DB_USER:                 ${POSTGRES_USER:-bill_splitter}
+      BS_DB_PASSWORD:             ${POSTGRES_PASSWORD:-changeme}
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+    ports:
+      - "${N8N_EXPOSED_PORT:-5678}:5678"
+    networks:
+      - internal
+      - external
+
+  # ── nginx (serves PWA frontend + proxies /webhook/) ────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: bill-splitter-nginx
+    restart: unless-stopped
+    depends_on:
+      - n8n
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    networks:
+      - external
+
+volumes:
+  postgres_data:
+    name: bill-splitter-postgres-data
+  n8n_data:
+    name: bill-splitter-n8n-data
+
+networks:
+  internal:
+    name: bill-splitter-internal
+    internal: true
+  external:
+    name: bill-splitter-external

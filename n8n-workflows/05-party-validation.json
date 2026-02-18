@@ -1,0 +1,149 @@
+{
+  "name": "05 – Party Validation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "party-validate",
+        "responseMode": "responseNode",
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "a5b2c3d4-0005-0005-0005-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "a5b2c3d4-0005-0005-0005-000000000002"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT party_id, party_code, status, restaurant_name, tip_percent,\n       subtotal_required, subtotal_claimed, bucket_empty,\n       subtotal_match, party_can_pay, remaining_value_cents\nFROM party_validation_view\nWHERE party_id = $1::uuid",
+        "options": {
+          "queryReplacement": "={{ [($input.first().json.query || $input.first().json).party_id] }}"
+        }
+      },
+      "id": "a5b2c3d4-0005-0005-0005-000000000003",
+      "name": "Get Validation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  i.id, i.name, i.unit_price_cents, i.total_quantity,\n  COALESCE(SUM(s.quantity), 0)                        AS claimed_quantity,\n  i.total_quantity - COALESCE(SUM(s.quantity), 0)     AS remaining_quantity\nFROM items i\nLEFT JOIN selections s ON s.item_id = i.id\nWHERE i.party_id = $1::uuid\nGROUP BY i.id\nORDER BY i.created_at",
+        "options": {
+          "queryReplacement": "={{ [($('Webhook').first().json.query || $('Webhook').first().json).party_id] }}"
+        }
+      },
+      "id": "a5b2c3d4-0005-0005-0005-000000000004",
+      "name": "Get Items State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 480],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  g.id, g.display_name, g.role, g.status, g.user_id,\n  COALESCE(SUM(s.quantity * i.unit_price_cents), 0)   AS subtotal_cents,\n  p.tip_percent,\n  COALESCE(pay.amount_paid_cents, 0)                   AS amount_paid_cents\nFROM guests g\nJOIN parties p ON p.id = g.party_id\nLEFT JOIN selections s ON s.guest_id = g.id\nLEFT JOIN items i ON i.id = s.item_id\nLEFT JOIN LATERAL (\n  SELECT COALESCE(SUM(amount_paid_cents), 0) AS amount_paid_cents\n  FROM payments WHERE guest_id = g.id\n) pay ON TRUE\nWHERE g.party_id = $1::uuid\nGROUP BY g.id, g.display_name, g.role, g.status, g.user_id, p.tip_percent, pay.amount_paid_cents\nORDER BY g.created_at",
+        "options": {
+          "queryReplacement": "={{ [($('Webhook').first().json.query || $('Webhook').first().json).party_id] }}"
+        }
+      },
+      "id": "a5b2c3d4-0005-0005-0005-000000000005",
+      "name": "Get Guests State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 660],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT s.guest_id, s.item_id, s.quantity\nFROM selections s\nJOIN items i ON i.id = s.item_id\nWHERE i.party_id = $1::uuid",
+        "options": {
+          "queryReplacement": "={{ [($('Webhook').first().json.query || $('Webhook').first().json).party_id] }}"
+        }
+      },
+      "id": "a5b2c3d4-0005-0005-0005-000000000006",
+      "name": "Get All Selections",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 840],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const validation  = $('Get Validation').first().json;\nconst items       = $('Get Items State').all().map(i => i.json);\nconst guests      = $('Get Guests State').all().map(i => i.json);\nconst allSels     = $('Get All Selections').all().map(i => i.json);\n\nif (!validation || !validation.party_id) {\n  throw new Error('Party not found');\n}\n\n// Unclaimed items (remaining_quantity > 0)\nconst unclaimedItems = items.filter(i => Number(i.remaining_quantity) > 0).map(i => ({\n  name:              i.name,\n  unit_price_cents:  Number(i.unit_price_cents),\n  remaining_quantity: Number(i.remaining_quantity),\n  remaining_value_cents: Number(i.remaining_quantity) * Number(i.unit_price_cents)\n}));\n\n// Compute guest totals with tip\nconst partySubtotal = Number(validation.subtotal_required);\nconst tipPct        = Number(validation.tip_percent);\nconst partyTipCents = Math.round(partySubtotal * tipPct / 100);\n\nconst guestsOut = guests.map(g => {\n  const sub = Number(g.subtotal_cents);\n  const tip = partySubtotal > 0\n    ? Math.round((sub / partySubtotal) * partyTipCents)\n    : 0;\n  const totalDue = sub + tip;\n  return {\n    id:              g.id,\n    display_name:    g.display_name,\n    role:            g.role,\n    status:          g.status,\n    subtotal_cents:  sub,\n    tip_cents:       tip,\n    total_due_cents: totalDue,\n    amount_paid_cents: Number(g.amount_paid_cents)\n  };\n});\n\n// Build my_selections map for the requesting guest (if join_token provided)\nconst mySelectionsMap = {};\nallSels.forEach(s => {\n  if (!mySelectionsMap[s.guest_id]) mySelectionsMap[s.guest_id] = [];\n  mySelectionsMap[s.guest_id].push({ item_id: s.item_id, quantity: Number(s.quantity) });\n});\n\nreturn [{\n  json: {\n    party: {\n      id:              validation.party_id,\n      party_code:      validation.party_code,\n      status:          validation.status,\n      restaurant_name: validation.restaurant_name,\n      tip_percent:     Number(validation.tip_percent)\n    },\n    validation: {\n      subtotal_required:    Number(validation.subtotal_required),\n      subtotal_claimed:     Number(validation.subtotal_claimed),\n      bucket_empty:         validation.bucket_empty,\n      subtotal_match:       validation.subtotal_match,\n      party_can_pay:        validation.party_can_pay,\n      remaining_value_cents: Number(validation.remaining_value_cents),\n      party_tip_cents:      partyTipCents,\n      party_total_cents:    Number(validation.subtotal_required) + partyTipCents\n    },\n    items,\n    guests:           guestsOut,\n    unclaimed_items:  unclaimedItems,\n    all_selections:   mySelectionsMap\n  }\n}];"
+      },
+      "id": "a5b2c3d4-0005-0005-0005-000000000007",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a5b2c3d4-0005-0005-0005-000000000008",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1250, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Get Validation",    "type": "main", "index": 0 },
+          { "node": "Get Items State",   "type": "main", "index": 0 },
+          { "node": "Get Guests State",  "type": "main", "index": 0 },
+          { "node": "Get All Selections","type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Validation":    { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "Get Items State":   { "main": [[{ "node": "Format Response", "type": "main", "index": 1 }]] },
+    "Get Guests State":  { "main": [[{ "node": "Format Response", "type": "main", "index": 2 }]] },
+    "Get All Selections":{ "main": [[{ "node": "Format Response", "type": "main", "index": 3 }]] },
+    "Format Response": {
+      "main": [
+        [{ "node": "Respond", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "a5b2c3d4-0005-0005-0005-000000000000",
+  "meta": { "templateCredsSetupCompleted": true },
+  "id": "workflow-party-validation",
+  "tags": [{ "name": "bill-splitter" }]
+}

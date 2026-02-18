@@ -1,0 +1,150 @@
+{
+  "name": "02 – Create Party",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "create-party",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "a2b2c3d4-0002-0002-0002-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "a2b2c3d4-0002-0002-0002-000000000002"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Generate a 6-character uppercase alphanumeric party code\nconst CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // base32-ish, unambiguous chars\nfunction generateCode() {\n  let code = '';\n  for (let i = 0; i < 6; i++) {\n    code += CHARS.charAt(Math.floor(Math.random() * CHARS.length));\n  }\n  return code;\n}\n\n// Generate a secure join token (32 hex chars)\nfunction generateToken() {\n  const arr = new Uint8Array(16);\n  crypto.getRandomValues(arr);\n  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');\n}\n\nconst body = $input.first().json.body || $input.first().json;\nconst partyCode  = generateCode();\nconst joinToken  = generateToken();\n\nreturn [{\n  json: {\n    party_code:      partyCode,\n    restaurant_name: body.restaurant_name || null,\n    tip_percent:     parseFloat(body.tip_percent) || 0,\n    user_id:         body.user_id || null,\n    display_name:    body.display_name || 'Host',\n    join_token:      joinToken\n  }\n}];"
+      },
+      "id": "a2b2c3d4-0002-0002-0002-000000000003",
+      "name": "Generate Codes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO parties (party_code, restaurant_name, tip_percent, created_by_user_id)\nVALUES ($1, $2, $3, $4::uuid)\nRETURNING id, party_code, restaurant_name, tip_percent, status, currency, created_at",
+        "options": {
+          "queryReplacement": "={{ [$json.party_code, $json.restaurant_name, $json.tip_percent, $json.user_id] }}"
+        }
+      },
+      "id": "a2b2c3d4-0002-0002-0002-000000000004",
+      "name": "Insert Party",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [750, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const party     = $input.first().json;\nconst prevJson  = $('Generate Codes').first().json;\n\nreturn [{\n  json: {\n    party_id:      party.id,\n    party_code:    party.party_code,\n    restaurant:    party.restaurant_name,\n    tip_percent:   party.tip_percent,\n    status:        party.status,\n    currency:      party.currency,\n    created_at:    party.created_at,\n    user_id:       prevJson.user_id,\n    display_name:  prevJson.display_name,\n    join_token:    prevJson.join_token\n  }\n}];"
+      },
+      "id": "a2b2c3d4-0002-0002-0002-000000000005",
+      "name": "Merge Party Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO guests (party_id, user_id, display_name, role, join_token)\nVALUES ($1::uuid, $2::uuid, $3, 'host', $4)\nRETURNING id, party_id, user_id, display_name, role, join_token, status, created_at",
+        "options": {
+          "queryReplacement": "={{ [$json.party_id, $json.user_id, $json.display_name, $json.join_token] }}"
+        }
+      },
+      "id": "a2b2c3d4-0002-0002-0002-000000000006",
+      "name": "Insert Host Guest",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const guest    = $input.first().json;\nconst merged   = $('Merge Party Data').first().json;\n\nreturn [{\n  json: {\n    party: {\n      id:              merged.party_id,\n      party_code:      merged.party_code,\n      restaurant_name: merged.restaurant,\n      tip_percent:     merged.tip_percent,\n      status:          merged.status,\n      currency:        merged.currency,\n      created_at:      merged.created_at\n    },\n    guest: {\n      id:           guest.id,\n      display_name: guest.display_name,\n      role:         guest.role,\n      status:       guest.status,\n      join_token:   guest.join_token,\n      created_at:   guest.created_at\n    }\n  }\n}];"
+      },
+      "id": "a2b2c3d4-0002-0002-0002-000000000007",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "a2b2c3d4-0002-0002-0002-000000000008",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1750, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Generate Codes", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate Codes": {
+      "main": [
+        [{ "node": "Insert Party", "type": "main", "index": 0 }]
+      ]
+    },
+    "Insert Party": {
+      "main": [
+        [{ "node": "Merge Party Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Merge Party Data": {
+      "main": [
+        [{ "node": "Insert Host Guest", "type": "main", "index": 0 }]
+      ]
+    },
+    "Insert Host Guest": {
+      "main": [
+        [{ "node": "Format Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [{ "node": "Respond", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "a2b2c3d4-0002-0002-0002-000000000000",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "workflow-create-party",
+  "tags": [{ "name": "bill-splitter" }]
+}
