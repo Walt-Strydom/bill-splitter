@@ -1,5 +1,5 @@
 {
-  "name": "04 – Upload Receipt (OCR)",
+  "name": "04 – Upload Receipt (Tesseract OCR)",
   "nodes": [
     {
       "parameters": {
@@ -60,23 +60,18 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://vision.googleapis.com/v1/images:annotate?key={{ $('Webhook').first().json.body.google_vision_api_key || $env.GOOGLE_VISION_API_KEY }}",
+        "url": "http://tesseract:5000/ocr",
         "sendBody": true,
         "contentType": "json",
         "body": {
-          "requests": [
-            {
-              "image": {
-                "content": "={{ ($('Webhook').first().json.body || $('Webhook').first().json).image_base64 }}"
-              },
-              "features": [{ "type": "TEXT_DETECTION", "maxResults": 1 }]
-            }
-          ]
+          "image_base64": "={{ ($('Webhook').first().json.body || $('Webhook').first().json).image_base64 }}"
         },
-        "options": {}
+        "options": {
+          "timeout": 30000
+        }
       },
       "id": "a4b2c3d4-0004-0004-0004-000000000005",
-      "name": "OCR via Google Vision",
+      "name": "Tesseract OCR",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1000, 200]
@@ -84,7 +79,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Parse Google Vision OCR text into structured receipt items\nconst response   = $input.first().json;\nconst fullText   = response?.responses?.[0]?.fullTextAnnotation?.text\n                || response?.responses?.[0]?.textAnnotations?.[0]?.description\n                || '';\n\nif (!fullText) {\n  throw new Error('OCR returned no text. Check image quality or API key.');\n}\n\nconst lines = fullText.split('\\n').map(l => l.trim()).filter(Boolean);\n\n// ── Parsing heuristics ──────────────────────────────────────\n// Match patterns like:\n//   Burger         R45.00\n//   Beer x2        R90.00\n//   Cola x 3       R75.00\n//   Chips          45.00\n//   TOTAL          R355.00  (ignored)\nconst SKIP_WORDS = ['total', 'subtotal', 'vat', 'tax', 'service', 'gratuity',\n                    'discount', 'change', 'cash', 'card', 'tip'];\n\nconst priceRe = /[Rr]?\\s*(\\d{1,6}(?:[.,]\\d{2})?)/;\nconst qtyRe   = /[xX×]\\s*(\\d+)$/;\n\nconst items = [];\n\nfor (const line of lines) {\n  const lower = line.toLowerCase();\n  // Skip summary lines\n  if (SKIP_WORDS.some(w => lower.includes(w))) continue;\n\n  const priceMatch = line.match(/[Rr]\\s*(\\d{1,6}(?:[.,]\\d{2})?)\\s*$/);\n  if (!priceMatch) continue;\n\n  const priceStr    = priceMatch[1].replace(',', '.');\n  const priceFloat  = parseFloat(priceStr);\n  if (isNaN(priceFloat) || priceFloat <= 0) continue;\n\n  // Extract quantity if present\n  let name  = line.replace(priceMatch[0], '').trim();\n  let qty   = 1;\n  const qm  = name.match(qtyRe);\n  if (qm) {\n    qty  = parseInt(qm[1], 10);\n    name = name.replace(qm[0], '').trim();\n  }\n\n  // Clean name\n  name = name.replace(/\\.+/g, '').trim();\n  if (!name || name.length < 2) continue;\n\n  // unit_price is the per-unit price (price on receipt is total for qty)\n  const unitPriceCents = Math.round((priceFloat / qty) * 100);\n\n  items.push({\n    name:             name.charAt(0).toUpperCase() + name.slice(1).toLowerCase(),\n    unit_price_cents: unitPriceCents,\n    total_quantity:   qty\n  });\n}\n\nif (items.length === 0) {\n  throw new Error('No receipt items could be parsed. Check image quality.');\n}\n\nconst guest = $('Validate Host Token').first().json;\n\nreturn [{\n  json: {\n    party_id: guest.party_id,\n    items\n  }\n}];"
+        "jsCode": "// Parse Tesseract OCR lines into structured receipt items.\n// Input: $json.lines (array of strings) from the Tesseract service.\nconst ocrResult = $input.first().json;\nconst lines = ocrResult.lines\n  || (ocrResult.text ? ocrResult.text.split('\\n').map(l => l.trim()).filter(Boolean) : []);\n\nif (!lines.length) {\n  throw new Error('OCR returned no text. Check image quality.');\n}\n\n// ── Parsing heuristics ───────────────────────────────────────\n// Matches receipt lines like:\n//   Burger           R45.00\n//   Beer x2          R90.00\n//   Chips x 3        R75.00\n//   Cola             45.00    (no R prefix)\n// Skips summary lines (total, vat, service charge, etc.)\nconst SKIP = ['total', 'subtotal', 'vat', 'tax', 'service', 'gratuity',\n              'discount', 'change', 'cash', 'card', 'tip', 'amount due',\n              'balance', 'payment'];\n\n// Price at end of line (optional R/r prefix, digits, optional .cents)\nconst PRICE_RE = /[Rr]?\\s*(\\d{1,6}(?:[.,]\\d{2})?)\\s*$/;\n// Quantity multiplier embedded in name: x2, x 3, x4\nconst QTY_RE   = /[xX]\\s*(\\d+)\\s*$/;\n\nconst items = [];\n\nfor (const line of lines) {\n  const lower = line.toLowerCase();\n  if (SKIP.some(w => lower.includes(w))) continue;\n\n  // Must end with a price\n  const priceMatch = line.match(PRICE_RE);\n  if (!priceMatch) continue;\n\n  const priceFloat = parseFloat(priceMatch[1].replace(',', '.'));\n  if (isNaN(priceFloat) || priceFloat <= 0) continue;\n\n  // Strip price from name; extract optional quantity\n  let name = line.slice(0, line.length - priceMatch[0].length).trim();\n  let qty  = 1;\n  const qm = name.match(QTY_RE);\n  if (qm) {\n    qty  = Math.max(1, parseInt(qm[1], 10));\n    name = name.slice(0, name.length - qm[0].length).trim();\n  }\n\n  // Clean up dots/dashes used as tab-stops on receipts\n  name = name.replace(/[.\\-]{2,}/g, '').trim();\n  if (!name || name.length < 2) continue;\n\n  // Capitalise first letter\n  name = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();\n\n  // Price on receipt is the total for qty; derive unit price\n  const unitPriceCents = Math.round((priceFloat / qty) * 100);\n  if (unitPriceCents <= 0) continue;\n\n  items.push({ name, unit_price_cents: unitPriceCents, total_quantity: qty });\n}\n\nif (!items.length) {\n  throw new Error('No receipt items could be parsed. Check image quality or receipt format.');\n}\n\nconst guest = $('Validate Host Token').first().json;\n\nreturn [{ json: { party_id: guest.party_id, items } }];"
       },
       "id": "a4b2c3d4-0004-0004-0004-000000000006",
       "name": "Parse OCR Items",
@@ -115,7 +110,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Build a bulk INSERT SQL for all parsed items\nconst { party_id, items } = $('Parse OCR Items').first().json;\n\nif (!items || items.length === 0) {\n  throw new Error('No items to insert');\n}\n\nconst params = [];\nconst valueParts = items.map((item, i) => {\n  const base = i * 3;\n  params.push(party_id, item.name, item.unit_price_cents);\n  // total_quantity is stored; quantity supplied per item\n  return `(uuid_generate_v4(), $${base+1}::uuid, $${base+2}, $${base+3}, ${item.total_quantity})`;\n});\n\nconst sql = `INSERT INTO items (id, party_id, name, unit_price_cents, total_quantity) VALUES ${valueParts.join(', ')} RETURNING id, name, unit_price_cents, total_quantity`;\n\nreturn [{ json: { sql, params, party_id, items } }];"
+        "jsCode": "// Build a bulk INSERT SQL for all parsed items.\nconst { party_id, items } = $('Parse OCR Items').first().json;\n\nif (!items || !items.length) throw new Error('No items to insert');\n\nconst params = [];\nconst valueParts = items.map((item, i) => {\n  const base = i * 3;\n  params.push(party_id, item.name, item.unit_price_cents);\n  return `(uuid_generate_v4(), $${base+1}::uuid, $${base+2}, $${base+3}, ${item.total_quantity})`;\n});\n\nconst sql = `INSERT INTO items (id, party_id, name, unit_price_cents, total_quantity)\n             VALUES ${valueParts.join(', ')}\n             RETURNING id, name, unit_price_cents, total_quantity`;\n\nreturn [{ json: { sql, params, party_id, items } }];"
       },
       "id": "a4b2c3d4-0004-0004-0004-000000000008",
       "name": "Build Insert SQL",
@@ -192,11 +187,11 @@
     },
     "Host Valid?": {
       "main": [
-        [{ "node": "OCR via Google Vision", "type": "main", "index": 0 }],
+        [{ "node": "Tesseract OCR", "type": "main", "index": 0 }],
         [{ "node": "Respond Unauthorized", "type": "main", "index": 0 }]
       ]
     },
-    "OCR via Google Vision": {
+    "Tesseract OCR": {
       "main": [
         [{ "node": "Parse OCR Items", "type": "main", "index": 0 }]
       ]

@@ -2,7 +2,7 @@ version: "3.9"
 
 # ============================================================
 #  Bill Splitter ZAR – Docker Compose
-#  Services: postgres, n8n, nginx (frontend)
+#  Services: postgres, tesseract, n8n, nginx
 #  All data persisted in named volumes.
 # ============================================================
 
@@ -28,6 +28,23 @@ services:
     networks:
       - internal
 
+  # ── Tesseract OCR Microservice ──────────────────────────────
+  # Exposes POST /ocr (base64 image → extracted text lines).
+  # Only reachable from within the internal Docker network.
+  tesseract:
+    build:
+      context: ./tesseract-service
+      dockerfile: Dockerfile
+    container_name: bill-splitter-tesseract
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
   # ── n8n ────────────────────────────────────────────────────
   n8n:
     image: n8nio/n8n:2.9.0
@@ -35,6 +52,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      tesseract:
         condition: service_healthy
     environment:
       # n8n internal database (uses the same Postgres instance, separate DB)
@@ -57,8 +76,8 @@ services:
       EXECUTIONS_PROCESS:         main
       N8N_LOG_LEVEL:              info
 
-      # Expose the Bill Splitter Postgres credentials to n8n workflows
-      # via environment variables (set in n8n credential from env)
+      # Bill Splitter Postgres connection details (used when creating
+      # the "Bill Splitter Postgres" credential in n8n)
       BS_DB_HOST:                 postgres
       BS_DB_PORT:                 5432
       BS_DB_NAME:                 ${POSTGRES_DB:-bill_splitter}
@@ -97,6 +116,6 @@ volumes:
 networks:
   internal:
     name: bill-splitter-internal
-    internal: true
+    internal: true   # tesseract & postgres are NOT reachable from outside
   external:
     name: bill-splitter-external
