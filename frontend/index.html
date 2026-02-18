@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en-ZA">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#6366f1" />
+  <meta name="description" content="Split restaurant bills instantly in ZAR" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="BillSplit" />
+  <title>Bill Splitter ZAR</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ── LOGIN VIEW ─────────────────────────────────────────── -->
+  <div id="view-login" class="view active">
+    <div class="login-logo">R</div>
+    <h1 class="login-heading">Bill Splitter</h1>
+    <p class="login-sub">Split restaurant bills from a photo. Fair, fast, in ZAR.</p>
+
+    <div class="login-actions">
+      <!-- Google Sign In rendered here -->
+      <div id="google-signin-btn"></div>
+
+      <div class="login-divider">or continue without account</div>
+
+      <button id="btn-anon" class="btn btn-ghost btn-full">
+        Continue Anonymously
+      </button>
+    </div>
+  </div>
+
+  <!-- ── HOME VIEW ──────────────────────────────────────────── -->
+  <div id="view-home" class="view">
+    <div class="topbar">
+      <span class="topbar-title">Bill Splitter</span>
+      <div class="topbar-right">
+        <button id="btn-analytics" class="btn btn-ghost btn-sm" style="display:none">My Stats</button>
+        <button id="btn-logout" class="btn btn-ghost btn-sm">Sign Out</button>
+      </div>
+    </div>
+
+    <div style="padding:16px; display:flex; flex-direction:column; gap:16px; flex:1;">
+      <!-- User chip -->
+      <div id="user-chip" class="user-chip hidden">
+        <img id="user-avatar" src="" alt="" />
+        <span>Signed in as <strong id="user-name-chip">User</strong></span>
+      </div>
+
+      <!-- Tabs -->
+      <div class="home-tabs">
+        <button class="home-tab active" data-tab="create">Create Party</button>
+        <button class="home-tab" data-tab="join">Join Party</button>
+      </div>
+
+      <!-- Create Party Panel -->
+      <div id="tab-create" class="card" style="display:flex; flex-direction:column; gap:14px;">
+        <div class="form-group">
+          <label for="inp-restaurant">Restaurant Name</label>
+          <input type="text" id="inp-restaurant" placeholder="e.g. Joe's Diner" maxlength="80" />
+        </div>
+        <div class="form-group">
+          <label for="inp-host-name">Your Display Name</label>
+          <input type="text" id="inp-host-name" placeholder="e.g. Alice" maxlength="40" />
+        </div>
+        <div class="form-group">
+          <label>Tip %</label>
+          <div class="tip-row">
+            <input type="range" id="inp-tip" min="0" max="25" step="1" value="0" />
+            <span class="tip-value" id="tip-display">0%</span>
+          </div>
+        </div>
+        <button id="btn-create-party" class="btn btn-primary btn-full">Create Party</button>
+      </div>
+
+      <!-- Join Party Panel -->
+      <div id="tab-join" class="card" style="display:none; flex-direction:column; gap:14px;">
+        <div class="form-group">
+          <label for="inp-party-code">Party Code</label>
+          <input type="text" id="inp-party-code" placeholder="e.g. T9K3WP" maxlength="6"
+                 style="text-transform:uppercase; letter-spacing:.15em; font-size:1.3rem; text-align:center;" />
+        </div>
+        <div class="form-group">
+          <label for="inp-guest-name">Your Display Name</label>
+          <input type="text" id="inp-guest-name" placeholder="e.g. Bob" maxlength="40" />
+        </div>
+        <button id="btn-join-party" class="btn btn-primary btn-full">Join Party</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PARTY VIEW ─────────────────────────────────────────── -->
+  <div id="view-party" class="view" style="flex-direction:column;">
+    <!-- Party Header -->
+    <div class="topbar">
+      <button id="btn-back-home" class="btn btn-ghost btn-sm">← Leave</button>
+      <span class="topbar-title" id="party-restaurant-topbar">Party</span>
+      <span id="party-code-badge" class="party-code-badge" title="Tap to copy">
+        <small>CODE</small>
+        <span id="party-code-text">------</span>
+      </span>
+    </div>
+
+    <!-- Party Tabs -->
+    <div class="party-tabs">
+      <button class="party-tab-btn active" data-ptab="items">Items</button>
+      <button class="party-tab-btn" data-ptab="payment">Payment</button>
+      <button class="party-tab-btn" data-ptab="guests">Guests</button>
+      <button class="party-tab-btn" id="ptab-receipt-btn" data-ptab="receipt" style="display:none;">Receipt</button>
+    </div>
+
+    <!-- ── ITEMS Tab ─────────────────────────────────────────── -->
+    <div id="ptab-items" class="party-tab-pane active">
+
+      <!-- Status banner -->
+      <div id="status-banner" class="status-banner pending">
+        <span id="status-icon">⏳</span>
+        <div id="status-message">Loading party status…</div>
+      </div>
+
+      <!-- Unclaimed Items -->
+      <div id="unclaimed-section" class="hidden">
+        <div class="section-heading">Unclaimed Items</div>
+        <div id="unclaimed-list" class="unclaimed-list"></div>
+      </div>
+
+      <!-- All Items to Claim -->
+      <div id="claim-section">
+        <div class="section-heading">Claim Your Items</div>
+        <p class="text-muted" style="margin-bottom:8px; font-size:.82rem;">
+          Tap + / − to claim quantities. Each item unit can only be claimed once.
+        </p>
+        <div id="item-list" class="item-list">
+          <p class="text-muted text-center" style="padding:24px 0;">
+            Waiting for host to upload the receipt…
+          </p>
+        </div>
+        <div style="margin-top:12px; text-align:right;">
+          <button id="btn-save-selections" class="btn btn-primary">Save My Claims</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── PAYMENT Tab ────────────────────────────────────────── -->
+    <div id="ptab-payment" class="party-tab-pane">
+      <!-- My Total -->
+      <div class="section-heading">My Tab</div>
+      <div class="total-card">
+        <div class="total-row">
+          <span>My Subtotal</span>
+          <span class="zar-amount" id="my-subtotal">R0.00</span>
+        </div>
+        <div class="total-row" id="tip-row-display">
+          <span>Tip (<span id="tip-pct-display">0</span>%)</span>
+          <span class="zar-amount" id="my-tip">R0.00</span>
+        </div>
+        <div class="total-row grand">
+          <span>Total Due</span>
+          <span class="zar-amount grand" id="my-total-due">R0.00</span>
+        </div>
+      </div>
+
+      <!-- Payment Input -->
+      <div class="payment-section mt-16">
+        <div class="section-heading">Enter Amount Paid</div>
+        <div class="form-group">
+          <div class="payment-input-wrap">
+            <span class="payment-prefix">R</span>
+            <input type="number" id="inp-amount-paid" placeholder="0.00" min="0" step="0.01" />
+          </div>
+        </div>
+        <button id="btn-ive-paid" class="btn btn-success btn-full" disabled>
+          I've Paid
+        </button>
+        <p id="payment-status-msg" class="text-muted text-center mt-8" style="font-size:.82rem;"></p>
+      </div>
+
+      <!-- Party Close (Host Only) -->
+      <div id="host-close-section" class="hidden mt-16">
+        <div class="section-heading">Host Controls</div>
+        <button id="btn-close-party" class="btn btn-danger btn-full" disabled>
+          Close Party
+        </button>
+        <p class="text-muted text-center mt-8" style="font-size:.82rem;">
+          All guests must close their tab before you can close the party.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── GUESTS Tab ─────────────────────────────────────────── -->
+    <div id="ptab-guests" class="party-tab-pane">
+      <div class="section-heading">Guests (<span id="guest-count">0</span>)</div>
+      <div id="guests-list" class="guests-list"></div>
+    </div>
+
+    <!-- ── RECEIPT Tab (Host Only) ───────────────────────────── -->
+    <div id="ptab-receipt" class="party-tab-pane">
+      <div class="section-heading">Upload Receipt</div>
+      <p class="text-muted" style="font-size:.82rem; margin-bottom:12px;">
+        Take a clear photo of the receipt. All items will be extracted automatically.
+        Re-uploading will replace all current items.
+      </p>
+
+      <div class="upload-area" id="upload-area">
+        <div class="upload-icon">📷</div>
+        <div class="upload-text">
+          <strong>Tap to upload receipt photo</strong>
+          or drag and drop
+        </div>
+        <input type="file" id="inp-receipt-file" accept="image/*" capture="environment"
+               style="display:none;" />
+      </div>
+
+      <div id="upload-preview" class="hidden" style="margin-top:12px;">
+        <img id="preview-img" src="" alt="Receipt preview"
+             style="width:100%; border-radius:var(--radius); border:1px solid var(--border); max-height:300px; object-fit:contain;" />
+      </div>
+
+      <button id="btn-process-receipt" class="btn btn-primary btn-full mt-16 hidden">
+        Process Receipt
+      </button>
+
+      <!-- Parsed Items Preview -->
+      <div id="parsed-items-section" class="hidden mt-16">
+        <div class="section-heading">Extracted Items</div>
+        <div id="parsed-items-list" class="item-list"></div>
+        <p class="text-muted text-center mt-8" style="font-size:.82rem;">
+          Items sourced from receipt. Prices cannot be modified.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ANALYTICS VIEW ─────────────────────────────────────── -->
+  <div id="view-analytics" class="view">
+    <div class="topbar">
+      <button id="btn-back-from-analytics" class="btn btn-ghost btn-sm">← Back</button>
+      <span class="topbar-title">My Stats</span>
+      <span></span>
+    </div>
+
+    <!-- Billing History -->
+    <div class="card">
+      <div class="section-heading" style="margin-bottom:12px;">Billing History</div>
+      <div id="billing-history-list" class="analytics-list">
+        <p class="text-muted text-center" style="padding:12px 0;">Loading…</p>
+      </div>
+    </div>
+
+    <!-- Top Restaurants -->
+    <div class="card">
+      <div class="section-heading" style="margin-bottom:12px;">Top 5 Restaurants</div>
+      <div id="top-restaurants-list" class="analytics-list">
+        <p class="text-muted text-center" style="padding:12px 0;">Loading…</p>
+      </div>
+    </div>
+
+    <!-- Top People -->
+    <div class="card">
+      <div class="section-heading" style="margin-bottom:12px;">Top 5 People I Split With</div>
+      <div id="top-people-list" class="analytics-list">
+        <p class="text-muted text-center" style="padding:12px 0;">Loading…</p>
+      </div>
+    </div>
+  </div>
+
+</div><!-- #app -->
+
+<!-- Toast Container -->
+<div id="toast-container"></div>
+
+<!-- Scripts -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

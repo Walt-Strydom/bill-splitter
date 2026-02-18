@@ -1,0 +1,127 @@
+{
+  "name": "10 – User Analytics",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "analytics",
+        "responseMode": "responseNode",
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "aab2c3d4-0010-0010-0010-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "aab2c3d4-0010-0010-0010-000000000002"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Billing History: all parties this user has closed a tab in\nSELECT\n  p.restaurant_name,\n  cl.total_cents     AS total_paid_cents,\n  p.created_at       AS party_date,\n  p.party_code\nFROM closures cl\nJOIN guests  g ON g.id  = cl.guest_id\nJOIN parties p ON p.id  = cl.party_id\nWHERE g.user_id = $1::uuid\nORDER BY cl.closed_at DESC\nLIMIT 50",
+        "options": {
+          "queryReplacement": "={{ [($input.first().json.query || $input.first().json).user_id] }}"
+        }
+      },
+      "id": "aab2c3d4-0010-0010-0010-000000000003",
+      "name": "Get Billing History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Top 5 restaurants by visit count\nSELECT\n  r.name,\n  urh.visit_count,\n  urh.last_visit_at\nFROM user_restaurant_history urh\nJOIN restaurants r ON r.id = urh.restaurant_id\nWHERE urh.user_id = $1::uuid\nORDER BY urh.visit_count DESC\nLIMIT 5",
+        "options": {
+          "queryReplacement": "={{ [($('Webhook').first().json.query || $('Webhook').first().json).user_id] }}"
+        }
+      },
+      "id": "aab2c3d4-0010-0010-0010-000000000004",
+      "name": "Get Top Restaurants",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 380],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Top 5 people shared bills with\nSELECT\n  u.name,\n  u.email,\n  u.picture_url,\n  usp.shared_party_count,\n  usp.last_shared_at\nFROM user_shared_people usp\nJOIN users u ON u.id = usp.other_user_id\nWHERE usp.user_id = $1::uuid\nORDER BY usp.shared_party_count DESC\nLIMIT 5",
+        "options": {
+          "queryReplacement": "={{ [($('Webhook').first().json.query || $('Webhook').first().json).user_id] }}"
+        }
+      },
+      "id": "aab2c3d4-0010-0010-0010-000000000005",
+      "name": "Get Top People",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 560],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const billingHistory  = $('Get Billing History').all().map(i => i.json);\nconst topRestaurants  = $('Get Top Restaurants').all().map(i => i.json);\nconst topPeople       = $('Get Top People').all().map(i => i.json);\n\nreturn [{\n  json: {\n    billing_history:  billingHistory,\n    top_restaurants:  topRestaurants,\n    top_people:       topPeople\n  }\n}];"
+      },
+      "id": "aab2c3d4-0010-0010-0010-000000000006",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 380]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "aab2c3d4-0010-0010-0010-000000000007",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1050, 380]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Get Billing History",  "type": "main", "index": 0 },
+          { "node": "Get Top Restaurants",  "type": "main", "index": 0 },
+          { "node": "Get Top People",       "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Billing History": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "Get Top Restaurants": { "main": [[{ "node": "Format Response", "type": "main", "index": 1 }]] },
+    "Get Top People":      { "main": [[{ "node": "Format Response", "type": "main", "index": 2 }]] },
+    "Format Response": {
+      "main": [
+        [{ "node": "Respond", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "aab2c3d4-0010-0010-0010-000000000000",
+  "meta": { "templateCredsSetupCompleted": true },
+  "id": "workflow-analytics",
+  "tags": [{ "name": "bill-splitter" }]
+}

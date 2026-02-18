@@ -1,0 +1,207 @@
+{
+  "name": "06 – Save Selections",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "save-selections",
+        "responseMode": "responseNode",
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "a6b2c3d4-0006-0006-0006-000000000002"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT g.id AS guest_id, g.party_id, g.status AS guest_status, g.role,\n       p.status AS party_status\nFROM guests g\nJOIN parties p ON p.id = g.party_id\nWHERE g.join_token = $1\n  AND g.status = 'active'\n  AND p.status = 'active'\nLIMIT 1",
+        "options": {
+          "queryReplacement": "={{ [($input.first().json.body || $input.first().json).join_token] }}"
+        }
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000003",
+      "name": "Validate Token",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $json.guest_id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000004",
+      "name": "Token Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validate selections against item totals, then build bulk UPSERT\nconst guest    = $('Validate Token').first().json;\nconst body     = $('Webhook').first().json.body || $('Webhook').first().json;\nconst sels     = body.selections || [];\n\nif (!sels.length) {\n  throw new Error('No selections provided');\n}\n\n// Build a bulk upsert using json_array_elements\n// We pass a single JSON parameter containing all selections\nconst selJson = JSON.stringify(sels.map(s => ({\n  item_id:  s.item_id,\n  quantity: Math.max(0, parseInt(s.quantity, 10) || 0)\n})));\n\nreturn [{\n  json: {\n    guest_id:  guest.guest_id,\n    party_id:  guest.party_id,\n    sel_json:  selJson\n  }\n}];"
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000005",
+      "name": "Prepare Upsert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Validate claimed quantities do not exceed item totals\nSELECT i.id, i.total_quantity,\n       COALESCE(\n         (SELECT SUM(s2.quantity) FROM selections s2\n          WHERE s2.item_id = i.id AND s2.guest_id != $1::uuid),\n         0\n       ) AS others_claimed\nFROM items i\nWHERE i.party_id = $2::uuid\n  AND i.id IN (\n    SELECT (elem->>'item_id')::uuid\n    FROM json_array_elements($3::json) AS elem\n  )",
+        "options": {
+          "queryReplacement": "={{ [$json.guest_id, $json.party_id, $json.sel_json] }}"
+        }
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000006",
+      "name": "Check Item Totals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validate that claimed qtys don't exceed item totals\nconst itemRows  = $input.all().map(i => i.json);\nconst prepared  = $('Prepare Upsert').first().json;\nconst sels      = JSON.parse(prepared.sel_json);\n\nconst itemMap = {};\nitemRows.forEach(r => {\n  itemMap[r.id] = { total: Number(r.total_quantity), othersClaimed: Number(r.others_claimed) };\n});\n\nfor (const sel of sels) {\n  const info = itemMap[sel.item_id];\n  if (!info) continue; // item not in this party\n  const available = info.total - info.othersClaimed;\n  if (sel.quantity > available) {\n    throw new Error(`Cannot claim ${sel.quantity} of item ${sel.item_id}; only ${available} available`);\n  }\n}\n\nreturn [{ json: prepared }];"
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000007",
+      "name": "Validate Quantities",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO selections (party_id, guest_id, item_id, quantity)\nSELECT $1::uuid, $2::uuid,\n       (elem->>'item_id')::uuid,\n       (elem->>'quantity')::integer\nFROM json_array_elements($3::json) AS elem\nWHERE (elem->>'quantity')::integer >= 0\nON CONFLICT (guest_id, item_id)\n  DO UPDATE SET quantity = EXCLUDED.quantity\nRETURNING id, item_id, quantity",
+        "options": {
+          "queryReplacement": "={{ [$json.party_id, $json.guest_id, $json.sel_json] }}"
+        }
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000008",
+      "name": "Upsert Selections",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1750, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const rows = $input.all().map(i => i.json);\nreturn [{ json: { success: true, selections: rows } }];"
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000009",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000010",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2250, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"error\": \"unauthorized\", \"message\": \"Invalid token or party/guest not active\" }",
+        "options": { "responseCode": 403 }
+      },
+      "id": "a6b2c3d4-0006-0006-0006-000000000011",
+      "name": "Respond Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1000, 400]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Validate Token", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate Token": {
+      "main": [
+        [{ "node": "Token Valid?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Token Valid?": {
+      "main": [
+        [{ "node": "Prepare Upsert", "type": "main", "index": 0 }],
+        [{ "node": "Respond Unauthorized", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Upsert": {
+      "main": [
+        [{ "node": "Check Item Totals", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Item Totals": {
+      "main": [
+        [{ "node": "Validate Quantities", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate Quantities": {
+      "main": [
+        [{ "node": "Upsert Selections", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert Selections": {
+      "main": [
+        [{ "node": "Format Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [{ "node": "Respond Success", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "a6b2c3d4-0006-0006-0006-000000000000",
+  "meta": { "templateCredsSetupCompleted": true },
+  "id": "workflow-save-selections",
+  "tags": [{ "name": "bill-splitter" }]
+}

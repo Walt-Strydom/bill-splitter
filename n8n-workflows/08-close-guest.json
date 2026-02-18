@@ -1,0 +1,266 @@
+{
+  "name": "08 – Close Guest",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "close-guest",
+        "responseMode": "responseNode",
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "a8b2c3d4-0008-0008-0008-000000000002"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT g.id AS guest_id, g.party_id, g.user_id, g.status AS guest_status, g.role\nFROM guests g\nJOIN parties p ON p.id = g.party_id\nWHERE g.join_token = $1\n  AND g.status = 'active'\n  AND p.status = 'active'\nLIMIT 1",
+        "options": {
+          "queryReplacement": "={{ [($input.first().json.body || $input.first().json).join_token] }}"
+        }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000003",
+      "name": "Validate Token",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $json.guest_id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000004",
+      "name": "Token Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  v.party_can_pay,\n  v.subtotal_required     AS party_subtotal,\n  v.tip_percent,\n  COALESCE(sel.guest_subtotal, 0)    AS guest_subtotal_cents,\n  COALESCE(pay.total_paid, 0)        AS amount_paid_cents,\n  p.restaurant_name\nFROM party_validation_view v\nJOIN parties p ON p.id = v.party_id\nLEFT JOIN (\n  SELECT SUM(s.quantity * i.unit_price_cents) AS guest_subtotal\n  FROM selections s JOIN items i ON i.id = s.item_id\n  WHERE s.guest_id = $2::uuid\n) sel ON TRUE\nLEFT JOIN (\n  SELECT SUM(amount_paid_cents) AS total_paid\n  FROM payments WHERE guest_id = $2::uuid\n) pay ON TRUE\nWHERE v.party_id = $1::uuid",
+        "options": {
+          "queryReplacement": "={{ [$('Validate Token').first().json.party_id, $('Validate Token').first().json.guest_id] }}"
+        }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000005",
+      "name": "Get Guest Totals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1000, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const state = $input.first().json;\nconst guest = $('Validate Token').first().json;\n\n// 1. Party must be ready\nif (!state.party_can_pay) {\n  throw new Error('Party not ready: items still unclaimed or subtotal not covered');\n}\n\n// 2. Compute guest totals\nconst partySubtotal  = Number(state.party_subtotal);\nconst tipPct         = Number(state.tip_percent);\nconst partyTipCents  = Math.round(partySubtotal * tipPct / 100);\nconst guestSubtotal  = Number(state.guest_subtotal_cents);\nconst guestTip       = partySubtotal > 0\n  ? Math.round((guestSubtotal / partySubtotal) * partyTipCents)\n  : 0;\nconst guestTotalDue  = guestSubtotal + guestTip;\nconst amountPaid     = Number(state.amount_paid_cents);\n\n// 3. Verify payment covers total\nif (amountPaid < guestTotalDue) {\n  throw new Error(`Payment (${amountPaid}) is less than total due (${guestTotalDue})`);\n}\n\nreturn [{\n  json: {\n    guest_id:          guest.guest_id,\n    party_id:          guest.party_id,\n    user_id:           guest.user_id,\n    restaurant_name:   state.restaurant_name,\n    subtotal_cents:    guestSubtotal,\n    tip_cents:         guestTip,\n    total_cents:       guestTotalDue,\n    paid_cents:        amountPaid\n  }\n}];"
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000006",
+      "name": "Validate Closure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO closures (party_id, guest_id, subtotal_cents, tip_cents, total_cents, paid_cents)\nVALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)\nON CONFLICT (guest_id) DO NOTHING\nRETURNING id, closed_at",
+        "options": {
+          "queryReplacement": "={{ [$json.party_id, $json.guest_id, $json.subtotal_cents, $json.tip_cents, $json.total_cents, $json.paid_cents] }}"
+        }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000007",
+      "name": "Insert Closure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1500, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE guests SET status = 'closed', closed_at = NOW()\nWHERE id = $1::uuid",
+        "options": {
+          "queryReplacement": "={{ [$('Validate Closure').first().json.guest_id] }}"
+        }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000008",
+      "name": "Mark Guest Closed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1750, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Update restaurant analytics (only for logged-in users)\nDO $$\nDECLARE\n  v_user_id    UUID := $1::uuid;\n  v_rest_name  TEXT := $2;\n  v_rest_id    UUID;\nBEGIN\n  IF v_user_id IS NULL OR v_rest_name IS NULL THEN RETURN; END IF;\n  INSERT INTO restaurants (name) VALUES (v_rest_name) ON CONFLICT (name) DO NOTHING;\n  SELECT id INTO v_rest_id FROM restaurants WHERE name = v_rest_name;\n  INSERT INTO user_restaurant_history (user_id, restaurant_id, visit_count, last_visit_at)\n  VALUES (v_user_id, v_rest_id, 1, NOW())\n  ON CONFLICT (user_id, restaurant_id) DO UPDATE\n    SET visit_count   = user_restaurant_history.visit_count + 1,\n        last_visit_at = NOW();\nEND $$",
+        "options": {
+          "queryReplacement": "={{ [$('Validate Closure').first().json.user_id, $('Validate Closure').first().json.restaurant_name] }}"
+        }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000009",
+      "name": "Update Restaurant History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2000, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Update shared-people analytics for logged-in users\nDO $$\nDECLARE\n  v_user_id   UUID := $1::uuid;\n  v_party_id  UUID := $2::uuid;\n  v_other_id  UUID;\nBEGIN\n  IF v_user_id IS NULL THEN RETURN; END IF;\n  FOR v_other_id IN\n    SELECT DISTINCT g.user_id\n    FROM guests g\n    WHERE g.party_id = v_party_id\n      AND g.user_id IS NOT NULL\n      AND g.user_id != v_user_id\n  LOOP\n    INSERT INTO user_shared_people (user_id, other_user_id, shared_party_count, last_shared_at)\n    VALUES (v_user_id, v_other_id, 1, NOW())\n    ON CONFLICT (user_id, other_user_id) DO UPDATE\n      SET shared_party_count = user_shared_people.shared_party_count + 1,\n          last_shared_at     = NOW();\n  END LOOP;\nEND $$",
+        "options": {
+          "queryReplacement": "={{ [$('Validate Closure').first().json.user_id, $('Validate Closure').first().json.party_id] }}"
+        }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000010",
+      "name": "Update Shared People",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2250, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credential-id",
+          "name": "Bill Splitter Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const closure  = $('Insert Closure').first().json;\nconst validated = $('Validate Closure').first().json;\nreturn [{\n  json: {\n    success:         true,\n    closed_at:       closure.closed_at,\n    subtotal_cents:  validated.subtotal_cents,\n    tip_cents:       validated.tip_cents,\n    total_cents:     validated.total_cents,\n    paid_cents:      validated.paid_cents\n  }\n}];"
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000011",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2500, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000012",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2750, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"error\": \"unauthorized\", \"message\": \"Invalid token or party/guest not active\" }",
+        "options": { "responseCode": 403 }
+      },
+      "id": "a8b2c3d4-0008-0008-0008-000000000013",
+      "name": "Respond Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1000, 400]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Validate Token", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate Token": {
+      "main": [
+        [{ "node": "Token Valid?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Token Valid?": {
+      "main": [
+        [{ "node": "Get Guest Totals", "type": "main", "index": 0 }],
+        [{ "node": "Respond Unauthorized", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Guest Totals": {
+      "main": [
+        [{ "node": "Validate Closure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate Closure": {
+      "main": [
+        [{ "node": "Insert Closure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Insert Closure": {
+      "main": [
+        [{ "node": "Mark Guest Closed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Mark Guest Closed": {
+      "main": [
+        [{ "node": "Update Restaurant History", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Restaurant History": {
+      "main": [
+        [{ "node": "Update Shared People", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Shared People": {
+      "main": [
+        [{ "node": "Format Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [{ "node": "Respond Success", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "a8b2c3d4-0008-0008-0008-000000000000",
+  "meta": { "templateCredsSetupCompleted": true },
+  "id": "workflow-close-guest",
+  "tags": [{ "name": "bill-splitter" }]
+}
